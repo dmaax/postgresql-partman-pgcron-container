@@ -2,32 +2,28 @@ name: Docker
 
 on:
   schedule:
-    - cron: '18 2 * * *'
+    - cron: "18 2 * * *"
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: dbsystel/postgresql-partman
+  IMAGE_NAME: dmaax/postgresql-partman-pgcron
+  PARTMAN_VERSION: v5.2.4
+  PARTMAN_CHECKSUM: 8328a00ce1a55a5c9173d4adbf251e784fed62413fb76bba89dd893749a720a5ecb25ee668eb0b826b8e1f2b89d9dd7da219fd797bfd9ab1a43d05f5b3ac494f
+  PG_CRON_VERSION: v1.6.7
+  PG_CRON_CHECKSUM: e3274d7223f7b5c297595397273bd3a9152c43b773b8006feb22b0be74b25b8248d6ea39cebebf2fe4bf7db63dbd74269f86d8422ecf2b4b38d815b222562d1a
 
 jobs:
   build:
     strategy:
       matrix:
-        postgres_version: [14, 15, 16, 17, 18]
-        major: [4,5]
-        include:
-          - partman_version: v4.7.4
-            partman_checksum: 28e4fdb83ecc16525959ae9593bfbfd077db429285f5f7d8e2468bfff6cbdbf2c81ace79a9ddeb4f00f51eb709163dbd713fe6b221a432ac2ff766f98d4cf8e4
-            default: "false"
-            major: 4
-          - partman_version: v5.2.4
-            partman_checksum: 8328a00ce1a55a5c9173d4adbf251e784fed62413fb76bba89dd893749a720a5ecb25ee668eb0b826b8e1f2b89d9dd7da219fd797bfd9ab1a43d05f5b3ac494f
-            default: "true"
-            major: 5
+        postgres_version: [15, 16, 17, 18]
+
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
       packages: write
@@ -37,7 +33,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Install the cosign tool except on PR
+      # Install cosign (skip on PR)
       - name: Install cosign
         if: github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@v3.4.0
@@ -45,80 +41,85 @@ jobs:
       - name: Setup Docker buildx
         uses: docker/setup-buildx-action@v3
 
-      # Login against a Docker registry except on PR
-      - name: Log into registry ${{ env.REGISTRY }}
+      # Login to GHCR
+      - name: Log into registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extract metadata (tags, labels) for Docker
+      # Docker metadata (tags + labels)
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ matrix.postgres_version == '18' && matrix.default == 'true' }}
-            type=raw,value=${{ matrix.postgres_version }},enable=${{ matrix.default == 'true'}}
-            ${{ matrix.postgres_version }}-${{ matrix.major }}
+            type=raw,value=latest,enable=${{ matrix.postgres_version == '18' }}
+            type=raw,value=${{ matrix.postgres_version }}
 
-      # Build and push Docker image with Buildx, using only the digest
-      - name: Build and push Docker image with digest
-        id: build-and-push-digest
+      # Build and push image (digest)
+      - name: Build and push image (digest)
+        id: build-digest
         uses: docker/build-push-action@v5
         with:
           context: .
-          build-args: |
-            POSTGRESQL_VERSION=${{ matrix.postgres_version }}
-            PARTMAN_VERSION=${{ matrix.partman_version }}
-            PARTMAN_CHECKSUM=${{ matrix.partman_checksum }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pipeline
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            POSTGRESQL_VERSION=${{ matrix.postgres_version }}
+            PARTMAN_VERSION=${{ env.PARTMAN_VERSION }}
+            PARTMAN_CHECKSUM=${{ env.PARTMAN_CHECKSUM }}
+            PG_CRON_VERSION=${{ env.PG_CRON_VERSION }}
+            PG_CRON_CHECKSUM=${{ env.PG_CRON_CHECKSUM }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Test the built Docker image using the digest
+      # Basic runtime test
       - name: Test Docker image
         env:
-          POSTGRES_PASSWORD: examplepassword
+          POSTGRES_PASSWORD: testpassword
         run: |
-          DIGEST=${{ steps.build-and-push-digest.outputs.digest }}
-          docker run -d --name test-db -e POSTGRES_PASSWORD=$POSTGRES_PASSWORD ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@$DIGEST
+          DIGEST=${{ steps.build-digest.outputs.digest }}
+          docker run -d --name test-db \
+            -e POSTGRES_PASSWORD=$POSTGRES_PASSWORD \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@$DIGEST
+
           sleep 30
           docker exec test-db pg_isready -U postgres
           docker stop test-db
           docker rm test-db
 
-        # Build and push Docker image with Buildx,this time using the final tags
-      - name: Build and push Docker image with final tags (release)
-        id: build-and-push-release
+      # Build and push final tags (release)
+      - name: Build and push image (release)
+        id: build-release
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v5
         with:
           context: .
-          build-args: |
-            POSTGRESQL_VERSION=${{ matrix.postgres_version }}
-            PARTMAN_VERSION=${{ matrix.partman_version }}
-            PARTMAN_CHECKSUM=${{ matrix.partman_checksum }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            POSTGRESQL_VERSION=${{ matrix.postgres_version }}
+            PARTMAN_VERSION=${{ env.PARTMAN_VERSION }}
+            PARTMAN_CHECKSUM=${{ env.PARTMAN_CHECKSUM }}
+            PG_CRON_VERSION=${{ env.PG_CRON_VERSION }}
+            PG_CRON_CHECKSUM=${{ env.PG_CRON_CHECKSUM }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Sign the resulting Docker image digest except on PRs
-      - name: Sign the published Docker image
+      # Sign images with cosign
+      - name: Sign published images
         if: github.event_name != 'pull_request'
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
-          DIGEST=${{ steps.build-and-push-release.outputs.digest }}
-          TAGS=$(echo ${{ steps.meta.outputs.tags }} | tr ',' '\n')
+          TAGS=$(echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n')
           for TAG in $TAGS; do
-            cosign sign -y $TAG
+            cosign sign -y "$TAG"
           done
